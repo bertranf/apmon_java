@@ -424,6 +424,12 @@ public class MonitoredJob implements AutoCloseable {
 		if (cachedData && cachedJobInfo != null)
 			return cachedJobInfo;
 
+		int index = cgroup.lastIndexOf("JAliEn_runner");
+		if (index > 0) {
+			cgroup = cgroup.substring(0, index);
+		}
+		logger.log(Level.SEVERE, "Cgroup is " + this.cgroup);
+
 		HashMap<Long, Double> ret = new HashMap<>();
 		String result = null;
 		String line = null;
