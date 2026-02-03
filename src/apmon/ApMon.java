@@ -46,10 +46,14 @@ import java.net.SocketException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.Vector;
 import java.util.concurrent.ThreadLocalRandom;
@@ -169,7 +173,7 @@ public class ApMon {
 
 	/** < The name of the monitored node. */
 
-	Vector<String> destAddresses;
+	Vector<List<InetAddress>> destAddresses;
 
 	/** < The IP addresses where the results will be sent. */
 	Vector<Integer> destPorts;
@@ -884,7 +888,7 @@ public class ApMon {
 	 */
 	private void arrayInit(Vector<String> adresses, Vector<Integer> ports, Vector<String> passwds, boolean firstTime) throws ApMonException, SocketException, IOException {
 
-		Vector<String> tmpAddresses;
+		Vector<List<InetAddress>> tmpAddresses;
 		Vector<Integer> tmpPorts;
 		Vector<String> tmpPasswds;
 
@@ -895,25 +899,39 @@ public class ApMon {
 		tmpPorts = new Vector<>();
 		tmpPasswds = new Vector<>();
 
+		final Set<String> alreadySeen = new HashSet<>();
+
 		/**
 		 * put the destination addresses, ports & passwords in some temporary buffers (because we don't want to keep the
 		 * monitor while making DNS requests)
 		 */
-
 		for (int i = 0; i < adresses.size(); i++) {
-			InetAddress inetAddr = InetAddress.getByName(adresses.get(i));
-			String ipAddr = inetAddr.getHostAddress();
+			final InetAddress[] allInetAddr = InetAddress.getAllByName(adresses.get(i));
 
-			/**
-			 * add the new destination only if it doesn't already exist in this.destAddresses
-			 */
-			if (!tmpAddresses.contains(ipAddr)) {
-				tmpAddresses.add(ipAddr);
+			final List<InetAddress> toAdd = new ArrayList<>(allInetAddr.length);
+
+			for (final InetAddress inetAddr : allInetAddr) {
+				final String ipAddr = inetAddr.getHostAddress();
+
+				/**
+				 * add the new destination only if it doesn't already exist in this.destAddresses
+				 */
+				if (!alreadySeen.contains(ipAddr)) {
+					alreadySeen.add(ipAddr);
+
+					toAdd.add(inetAddr);
+				}
+			}
+
+			if (toAdd.size() > 0) {
 				tmpPorts.add(ports.get(i));
 				if (passwds != null) {
 					tmpPasswds.add(passwds.get(i));
 				}
-				logger.info("adding destination: " + ipAddr + ":" + ports.get(i));
+
+				tmpAddresses.add(toAdd);
+
+				logger.info("adding destination: " + toAdd + ":" + ports.get(i));
 			}
 		}
 
@@ -1063,7 +1081,6 @@ public class ApMon {
 
 			/** for each destination */
 			for (i = 0; i < destAddresses.size(); i++) {
-				InetAddress destAddr = InetAddress.getByName(destAddresses.get(i));
 				int port = destPorts.get(i).intValue();
 
 				String header = "v:" + APMON_VERSION + "_jp:";
@@ -1104,17 +1121,42 @@ public class ApMon {
 				}
 
 				dgramSize = newBuff.length;
-				final DatagramPacket dp = new DatagramPacket(newBuff, dgramSize, destAddr, port);
 
-				try {
-					dgramSocket.send(dp);
+				final List<InetAddress> alternatives = destAddresses.get(i);
+
+				boolean sentOk = false;
+
+				for (int tgt = 0; !sentOk && tgt < alternatives.size(); tgt++) {
+					final InetAddress destAddr = alternatives.get(tgt);
+
+					final DatagramPacket dp = new DatagramPacket(newBuff, dgramSize, destAddr, port);
+
+					try {
+						dgramSocket.send(dp);
+
+						sentOk = true;
+
+						if (tgt > 0) {
+							// the one that works gets moved to the front so that next time we try that directly
+							alternatives.remove(tgt);
+							alternatives.add(0, destAddr);
+
+							if (logger.isLoggable(Level.FINER))
+								logger.log(Level.FINER, "Reworked destination list to " + alternatives);
+						}
+					}
+					catch (final IOException e) {
+						if (logger.isLoggable(Level.FINE))
+							logger.log(Level.FINE, "Error sending parameters to " + destAddr, e);
+					}
 				}
-				catch (final IOException e) {
-					if (logger.isLoggable(Level.WARNING))
-						logger.log(Level.WARNING, "Error sending parameters to " + destAddresses.get(i), e);
 
-					dgramSocket.close();
-					dgramSocket = new DatagramSocket();
+				if (!sentOk) {
+					if (logger.isLoggable(Level.WARNING))
+						logger.log(Level.WARNING, "Error sending parameters to any of " + alternatives);
+
+					// dgramSocket.close();
+					// dgramSocket = new DatagramSocket();
 				}
 
 				if (logger.isLoggable(Level.FINE)) {
